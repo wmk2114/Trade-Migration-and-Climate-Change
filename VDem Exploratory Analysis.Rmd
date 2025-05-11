@@ -1,0 +1,147 @@
+---
+title: "VDem"
+author: "Wyatt King"
+date: "2025-02-06"
+output: html_document
+---
+
+```{r}
+library(devtools)
+library(vdemdata)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(rvest)
+library(lme4)
+
+install.packages("Matrix", dependencies = TRUE, type = "source")
+install.packages("lme4", dependencies = TRUE, type = "source")
+
+oo <- options(repos = "https://cran.r-project.org/")
+install.packages("Matrix")
+install.packages("lme4")
+options(oo)
+```
+
+```{r}
+tarriff<- read.csv("/Users/wyatttheking/Desktop/Spring 2025/TMCC/API_TM.TAX.MRCH.WM.AR.ZS_DS2_en_csv_v2_2283/API_TM.TAX.MRCH.WM.AR.ZS_DS2_en_csv_v2_2283.csv", skip=4, header=T)
+
+row<- tarriff[1,]
+country_name<- rep(tarriff[1,1], length(1960:2023))
+remove_unneccesarry<- row[,-c(1:4, ncol(row))]
+vec1<-as.vector(unlist(remove_unneccesarry))
+vec2<- c(1960:2023)
+
+get_tarriff<-function(y){
+  row<- tarriff[y,]
+  country_name<- rep(tarriff[y,1], length(1960:2023))
+  remove_unneccesarry<- row[,-c(1:4, ncol(row))]
+  vec1<-as.vector(unlist(remove_unneccesarry))
+  vec2<- c(1960:2023)
+  df<- data.frame("country_name"= country_name,
+                  "year"= vec2,
+                  "tarriff"= vec1)
+  return(df)
+}
+
+all_tarriffs<- lapply(seq_len(nrow(tarriff)), get_tarriff)
+
+
+disentangled<- data.frame()
+for(j in seq_along(all_tarriffs)){
+  df<- all_tarriffs[[j]]
+  disentangled<- rbind(disentangled, df)
+}
+```
+
+```{r}
+merged_df<- merge(our_vdem, disentangled, by=c("country_name", "year"))
+no_na_df<- na.omit(merged_df)
+third_wave<-no_na_df[no_na_df$year > 1960 & no_na_df$year< 2001,]
+```
+
+```{r}
+
+m1<- lm(tarriff~.-country_name, data=third_wave)
+summary(m1)
+
+colnames(third_wave)[8]<-"tarriff1"
+m2<-lmer(tarriff1 ~ year+v2asuffrage+v2elfrfair+v2exrescon+v2jupoatck+v2clrspct+(1|country_name), data=third_wave)
+
+test_me<- lmer(tarriff1~year+v2elfrfair + (year | country_name), data=third_wave)
+
+??lme
+
+m1<- lmer(tarriff~.+(. | country_name), data=third_wave)
+```
+
+
+
+```{r}
+countries_tarriffs<-tarriff[colnames(tarriff) %in% c("Country.Name", "X2019")]
+colnames(countries_tarriffs)[1]<- "country_name"
+```
+
+```{r}
+vdem_2019<-  our_vdem[our_vdem$year == 2019,]
+merged_df<- merge(countries_tarriffs, vdem_2019)
+merged_df<- merged_df[-8]
+
+basic_lm<- lm(X2019~.-country_name, data=merged_df)
+summary(basic_lm)
+```
+
+
+```{r}
+
+vars<- c("v2asuffrage", "v2elfrfair", "v2exrescon", "v2jupoatck", "v2clrspct", "country_name", "year")
+our_vdem<- vdem[vars]
+our_vdem_post_1948<- our_vdem[our_vdem$year >= 1948,]
+??ggplot
+
+map_func<- function(x){
+  country<- our_vdem_post_1948[our_vdem_post_1948$country_name== x,]
+  matplot(x=country$year, 
+        y=cbind(country$v2elfrfair,country$v2exrescon,country$v2jupoatck,
+                country$v2clrspct), 
+        type = "l", 
+        lty = 1, 
+        lwd=2,
+        col = c("darkred", "navy", "darkgreen", "darkorange"), xlab = "Year", 
+        ylab = "Y", 
+        main = paste(paste0(x, "'s"), "Democracy Over Time"))
+  legend("bottomright", legend = c("Election Fairness", "Executive Respects Constitution", "Court Packing", "Impartial Application of Laws"), 
+       col = c("darkred", "navy", "darkgreen", "darkorange"), 
+       lty = 1)
+}
+
+map_func("Argentina")
+
+
+mexico<- our_vdem_post_1948[our_vdem_post_1948$country_name== "Mexico",]
+
+matplot(x=mexico$year, 
+        y=cbind(mexico$v2elfrfair,mexico$v2exrescon,mexico$v2jupoatck,
+                mexico$v2clrspct), 
+        type = "l", 
+        lty = 1, 
+        lwd=2,
+        col = c("darkred", "navy", "darkgreen", "darkorange"), xlab = "Year", 
+        ylab = "Y", 
+        main = "Mexico's Democracy Over Time")
+
+legend("bottomright", legend = c("Election Fairness", "Executive Respects Constitution", "Court Packing", "Impartial Application of Laws"), 
+       col = c("darkred", "navy", "darkgreen", "darkorange"), 
+       lty = 1)
+?matplot
+
+plot(x=our_vdem_post_1948$year, y=our_vdem_post_1948$v2elfrfair, col= as.factor(our_vdem_post_1948$country_name))
+?plot
+ggplot(data=our_vdem_post_1948)+
+  geom_line(x="year", y="v2elfrfair", aes(color="country_name"))
+
+ggplot(data=our_vdem_post_1949)+
+  geom_point(x=year, y=v2elfrfair, color=country_name)
+
+```
+

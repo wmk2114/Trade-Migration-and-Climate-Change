@@ -1,0 +1,303 @@
+---
+title: '[SCRATCH] Replication MK'
+author: "Wyatt King"
+date: "2025-04-13"
+output: html_document
+---
+
+
+```{r}
+calculate_polity_scores <- function(data) {
+  # Democracy Score
+  data$DEMOC <- with(data, 
+    ifelse(XRCOMP == 3, 2, ifelse(XRCOMP == 2, 1, 0)) +
+    ifelse((XRCOMP %in% c(2, 3)) & (XROPEN %in% c(3, 4)), 1, 0) +
+    ifelse(XCONST == 7, 4, 
+           ifelse(XCONST == 6, 3, 
+                  ifelse(XCONST == 5, 2, 
+                         ifelse(XCONST == 4, 1, 0)))) +
+    ifelse(PARCOMP == 5, 3, 
+           ifelse(PARCOMP == 4, 2, 
+                  ifelse(PARCOMP == 3, 1, 0)))
+  )
+
+  # Autocracy Score
+  data$AUTOC <- with(data, 
+    ifelse(XRCOMP == 1, 2, 0) +
+    ifelse(XRCOMP == 1 & XROPEN %in% c(1, 2), 1, 0) +
+    ifelse(XCONST == 1, 3, 
+           ifelse(XCONST == 2, 2, 
+                  ifelse(XCONST == 3, 1, 0))) +
+    ifelse(PARREG == 4, 2, 
+           ifelse(PARREG == 3, 1, 0)) +
+    ifelse(PARCOMP == 1, 2, 
+           ifelse(PARCOMP == 2, 1, 0))
+  )
+
+  # Combined Polity Score
+  data$POLITY <- data$DEMOC - data$AUTOC
+
+  return(data)
+}
+```
+
+
+
+
+
+
+```{r}
+library(stats)
+```
+
+
+```{r}
+perform_prais_winsten_panel <- function(data, response_var, predictor_vars,
+                                        country_var, time_var,
+                                        max_iter = 10, tol = 1e-5, include_time_fe = TRUE) {
+  # Ensure categorical and panel IDs are correctly typed
+  data[[time_var]] <- as.integer(data[[time_var]])  # For sorting
+
+  # Sort data by panel and time
+  data <- data[order(data[[country_var]], data[[time_var]]), ]
+
+  # Create fixed effects dummies if needed
+  fe_terms <- c()
+  if (include_time_fe) fe_terms <- c(fe_terms, paste0("factor(", time_var, ")"))
+  fe_terms <- c(fe_terms, paste0("factor(", country_var, ")"))
+
+  # Build formula
+  all_predictors <- c(predictor_vars, fe_terms)
+  all_predictors<- paste(all_predictors, collapse = " + ")
+  model_formula <- stats::as.formula(paste(response_var, "~", all_predictors))
+
+  # Initial OLS
+  ols_model <- lm(model_formula, data = data)
+  residuals_prev <- residuals(ols_model)
+
+  for (i in 1:max_iter) {
+    # Estimate rho separately per country and average (or optionally median or weighted)
+    data$residuals_prev <- residuals_prev
+    rho_values <- by(data, data[[country_var]], function(panel_data) {
+      e <- panel_data$residuals_prev
+      if (length(e) < 2) return(NA)
+      rho_model <- lm(e[-1] ~ e[-length(e)] - 1)
+      coef(rho_model)
+    })
+    rho <- mean(unlist(rho_values), na.rm = TRUE)
+
+    # Transform y and X
+    y <- data[[response_var]]
+    X <- model.matrix(model_formula, data = data)
+
+    y_star <- numeric(nrow(data))
+    X_star <- matrix(0, nrow = nrow(data), ncol = ncol(X))
+
+    for (cid in levels(data[[country_var]])) {
+      idx <- which(data[[country_var]] == cid)
+      y_panel <- y[idx]
+      X_panel <- X[idx, , drop = FALSE]
+      if (length(idx) < 2) {
+        y_star[idx] <- y_panel
+        X_star[idx, ] <- X_panel
+      } else {
+        y_star[idx[1]] <- sqrt(1 - rho^2) * y_panel[1]
+        y_star[idx[-1]] <- y_panel[-1] - rho * y_panel[-length(y_panel)]
+
+        X_star[idx[1], ] <- sqrt(1 - rho^2) * X_panel[1, ]
+        X_star[idx[-1], ] <- X_panel[-1, ] - rho * X_panel[-nrow(X_panel), ]
+      }
+    }
+
+    # Refit
+    pw_model <- lm(y_star ~ X_star)
+    residuals_new <- residuals(pw_model)
+
+    if (sqrt(mean((residuals_new - residuals_prev)^2)) < tol) break
+    residuals_prev <- residuals_new
+  }
+
+  return(summary(pw_model))
+}
+```
+
+```{r}
+?as.formula
+```
+
+
+```{r}
+colnames(d1)
+pw_test<-perform_prais_winsten_panel(data=d1, response_var = "newtar", 
+                            predictor_vars=c("l1fiveop", "l1polity", "l1lnpop", "l1gdp_pc"),
+                            country_var = "country",
+                            time_var= "date",
+                            max_iter = 20,
+                            tol = 1e-5, 
+                            include_time_fe = TRUE)
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+library(haven)       # to read Stata files (.dta)
+library(dplyr) # for data wrangling
+library(plm)         # for panel data regression
+library(lmtest)      # for coeftest()
+library(sandwich) 
+library(stargazer)
+```
+
+```{r}
+data<- haven::read_dta("/Users/wyatttheking/Desktop/Spring 2025/TMCC/Research Project/Replication Data/LDC_IO_replication.dta")
+data$country<-as.factor(data$country)
+```
+
+```{r}
+pdata <- pdata.frame(data, index = c("country", "date"))
+```
+
+```{r}
+model <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + country, 
+             data = pdata, 
+             model = "within")
+
+coeftest(model, vcov = vcovHC(model, type = "HC1", cluster = "group"))
+```
+
+```{r}
+colnames(data)
+```
+
+### OLS Models
+Lagged by one, remove columns with NA
+```{r}
+sort(colnames(data))
+# We include our variables for our first model
+l1_data<- data[colnames(data) %in% c("newtar", "polityiv_update2", "gdp_pc_95d", "lnpop", "date", "country")]
+```
+
+```{r}
+# We remove NA values from our data
+l1_data_clean<- na.omit(l1_data)
+dim(l1_data_clean)
+length(unique(l1_data_clean$country))
+```
+
+```{r}
+m1<- lm(newtar~., data=l1_data_clean)
+pw<- prais::prais_winsten(m1, data=l1_data_clean, index=c("country", "date"))
+summary(pw)
+
+?prais_winsten
+```
+
+```{r}
+data <- data[order(data$country, data$date), ]
+
+m1<- lm(avnewtar~l1polity+l1gdp_pc+l1lnpop+date+country, data=data)
+pw<- prais::prais_winsten(m1, data=data, index=c("country", "date"))
+
+data
+
+?prais_winsten
+
+lmtest::coeftest(m1, vcov. = NULL, type = "HC1")
+coeftest
+
+car::durbinWatsonTest(m1)
+```
+
+# ChatGPT Results
+```{r}
+# Load necessary libraries
+library(haven)       # To read Stata files
+library(dplyr)       # For data manipulation
+library(plm)         # For panel data models
+library(lmtest)      # For robust standard errors
+library(sandwich)    # Robust covariance matrix
+library(stargazer)   # For model output
+
+# Load your dataset
+data <- read_dta("your_data.dta")  # replace with actual .dta file name
+
+# Convert to pdata.frame for panel data structure
+data <- pdata.frame(data, index = c("country", "date"))
+
+# Generate lagged variables
+data <- data %>%
+  mutate(
+    l1polity = lag(polity, 1),
+    l1lnpop = lag(lnpop, 1),
+    l1gdp_pc = lag(gdp_pc_95d, 1),
+    l1ecris2 = lag(ecris2, 1),
+    l1bpc1 = lag(bpc1, 1),
+    l1signed = lag(signed, 1),
+    l1usheg = lag(usheg, 1),
+    l1fiveop = lag(fiveop, 1),
+    l1avnewtar = lag(avnewtar, 1),
+    l1office = lag(yrsoffic, 1),
+    l1gatt_wto_new = lag(gatt_wto_new, 1),
+    l1fdi = lag(fdignp, 1),
+    l1aclpn = lag(aclpn, 1)
+  )
+
+# Run regressions (models m21 to m26 as examples
+m21 <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + country +as.numeric(date), data = pdata, model = "within", index = c("country", "time"))
+summary(m21)
+colnames(data)
+
+m21 <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + factor(country)+ as.numeric(date), data = data, model = "within", index = c("country", "time"))
+
+data_gls <- as.data.frame(data)
+data_gls$country <- droplevels(as.factor(data_gls$country))
+
+m22 <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + l1ecris2 + factor(country)+as.numeric(date), data = data, model = "within")
+summary(m22)
+m23 <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + l1bpc1 + factor(country), data = data, model = "within")
+m24 <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + l1signed + factor(country), data = data, model = "within")
+m25 <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + l1usheg + factor(country), data = data, model = "within")
+m26 <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + l1fiveop + factor(country), data = data, model = "within")
+
+# Export results (similar to estout)
+stargazer(m21, m22, m23, m24, m25, m26, type = "text", out = "t2.txt",
+          title = "Table 2. Dependent Variable: Statutory Tariff Rates",
+          column.labels = c("M21", "M22", "M23", "M24", "M25", "M26"),
+          covariate.labels = c("POLITY", "LN POP", "GDP PC", "EC CRISIS", "BP CRISIS", "IMF", "US HEG", "FIVE OPEN", "Constant"),
+          dep.var.labels = "Statutory Tariff Rate",
+          keep.stat = c("n", "rsq", "f"))
+```
+
+
+
+```{r}
+# Table 3 models
+m31 <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + l1ecris2 + l1bpc1 + l1signed + l1avnewtar + l1office + factor(country)+as.numeric(date), data = data, model = "within")
+summary(m31)
+m32 <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + l1ecris2 + l1bpc1 + l1signed + l1office + l1gatt_wto_new + l1fiveop + l1usheg + factor(country), data = data, model = "within")
+m33 <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + l1ecris2 + l1bpc1 + l1signed + l1office + l1avnewtar + l1gatt_wto_new + l1fdi + factor(country), data = data, model = "within")
+m34 <- plm(newtar ~ l1aclpn + l1lnpop + l1gdp_pc + l1ecris2 + l1bpc1 + l1signed + l1office + l1avnewtar + l1gatt_wto_new + l1fdi + factor(country), data = data, model = "within")
+
+# Export Table 2 results
+stargazer(m21, m22, m23, m24, m25, m26, type = "text", out = "t2.txt",
+          title = "Table 2. Dependent Variable: Statutory Tariff Rates",
+          column.labels = c("M21", "M22", "M23", "M24", "M25", "M26"),
+          covariate.labels = c("POLITY", "LN POP", "GDP PC", "EC CRISIS", "BP CRISIS", "IMF", "US HEG", "FIVE OPEN", "Constant"),
+          dep.var.labels = "Statutory Tariff Rate",
+          keep.stat = c("n", "rsq", "f"))
+
+# Export Table 3 results
+stargazer(m31, m32, m33, m34, type = "text", out = "t3.txt",
+          title = "Table 3. Extended Tariff Rate Models",
+          column.labels = c("M31", "M32", "M33", "M34"),
+          dep.var.labels = "Statutory Tariff Rate",
+          keep.stat = c("n", "rsq", "f"))
+```
