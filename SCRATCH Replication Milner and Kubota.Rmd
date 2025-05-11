@@ -6,6 +6,187 @@ output: html_document
 ---
 
 
+
+```{r}
+# Load required packages
+library(haven)
+library(dplyr)
+library(readr)
+library(stringr)
+
+# Load data
+mk_data <- read_dta("LDC_IO_replication.dta")
+polity <- read_csv("Polity_Data.csv")
+
+# === Step 1: Clean Polity country names ===
+polity$country <- gsub(" ", "", polity$country)
+polity$country <- gsub("\\(Burma\\)", "", polity$country)
+polity$country <- gsub("Kyrgyzstan", "KyrgyzRepublic", polity$country)
+colnames(polity)<- toupper(colnames(polity))
+
+# === Step 2: Calculate custom Polity scores ===
+calculate_new_polity_scores <- function(data) {
+  data$DEMOC_NO_XCONST <- with(data, 
+    ifelse(XRCOMP == 3, 2, ifelse(XRCOMP == 2, 1, 0)) +
+    ifelse((XRCOMP %in% c(2, 3)) & (XROPEN %in% c(3, 4)), 1, 0) +
+    ifelse(PARCOMP == 5, 3, 
+           ifelse(PARCOMP == 4, 2, 
+                  ifelse(PARCOMP == 3, 1, 0)))
+  )
+
+  data$AUTO_NO_XCONST <- with(data, 
+    ifelse(XRCOMP == 1, 2, 0) +
+    ifelse(XRCOMP == 1 & XROPEN %in% c(1, 2), 1, 0) +
+    ifelse(PARREG == 4, 2, 
+           ifelse(PARREG == 3, 1, 0)) +
+    ifelse(PARCOMP == 1, 2, 
+           ifelse(PARCOMP == 2, 1, 0))
+  )
+
+  data$POLITY_NO_XCONST <- data$DEMOC_NO_XCONST - data$AUTO_NO_XCONST
+  return(data)
+}
+
+# Apply the score calculation
+polity <- calculate_new_polity_scores(polity)
+
+```
+
+```{r}
+# Make sure mk_data's country names are formatted similarly to polity$country
+mk_data <- mk_data %>%
+  mutate(
+    merge_country = str_to_lower(str_trim(ctylabel)),
+    merge_country = gsub(" ", "", merge_country)
+  )
+
+# Named vector for harmonization
+harmonization_map <- c(
+  "americansamoa" = "americansamoa",
+  "antigua&barbuda" = "antiguaandbarbuda",
+  "aruba" = "aruba",
+  "bahamas" = "bahamas,the",
+  "barbados" = "barbados",
+  "belize" = "belize",
+  "bermuda" = "bermuda",
+  "brunei" = "brunei",
+  "burkinafaso" = "burkinafaso",
+  "capeverde" = "capeverde",
+  "caymanislands" = "caymanislands",
+  "centralafricanrepublic" = "centralafricanrepublic",
+  "congo" = "congo",
+  "costarica" = "costarica",
+  "coted'ivoire" = "coted'ivoire",
+  "czechrepublic" = "czechrepublic",
+  "dominica" = "dominica",
+  "dominicanrepublic" = "dominicanrepublic",
+  "elsalvador" = "elsalvador",
+  "equatorialguinea" = "equatorialguinea",
+  "kyrgyzrepublic" = "kyrgyzrepublic"
+)
+
+# Apply harmonization
+mk_data <- mk_data %>%
+  mutate(merge_country = recode(merge_country, !!!harmonization_map),
+         merge_year= date)
+
+colnames(polity)<- tolower(colnames(polity))
+polity_data <- polity %>%
+  mutate(
+    merge_country = str_to_lower(str_trim(country)),
+    merge_year = year
+  )
+
+```
+
+
+```{r}
+merged_data <- mk_data %>%
+  left_join(polity_data, by = c("merge_country", "merge_year"))
+
+# Diagnostics
+cat("Total MK observations:", nrow(mk_data), "\n")
+cat("Matched with Polity:", sum(!is.na(merged_data$democ)), "\n")
+```
+
+```{r}
+lag_variable <- function(x, n = 1) {
+  if (!is.numeric(n) || n < 0) {
+    stop("n must be a non-negative integer")
+  }
+  
+  if (n == 0) {
+    return(x)
+  }
+  
+  return(c(rep(NA, n), head(x, -n)))
+}
+
+merged_data$l1exconst<-lag_variable(merged_data$exconst)
+merged_data$l1polity_no_xconst<-lag_variable(merged_data$polity_no_xconst)
+```
+
+```{r}
+convert_dict<- function(x){
+  if(is.na(x)){
+    return(NA)
+  }
+  else if(x==8){
+    return(4)
+  }
+  else if(x==6 | x==1){
+    return(3)
+  }
+  else if(x==4){
+    return(2)
+  }
+  else if(x==2){
+    return(0)
+  }
+  else{
+    return(1)
+  }
+}
+
+
+merged_data$l1dictator1_2<- sapply(merged_data$l1dictator1, convert_dict)
+```
+
+
+```{r}
+mc_1<- c("l1exconst", "l1polity_no_xconst", "l1dictator1_2", "l1lnpop", "l1gdp_pc", "newtar", "date", "country")
+```
+
+```{r}
+mdf_1<- na.omit(polity_mk[,mc_1])
+
+mm1_1<- prais::prais_winsten(newtar~l1exconst+l1lnpop+l1gdp_pc+date+country, data=mdf_1, index=c("date", "country"))
+mm1_2<- lm(newtar~l1exconst*as.factor(l1dictator1_2)+l1lnpop+l1gdp_pc+date+country, data=mdf_1, index=c("date", "country"))
+
+mdf_1$l1exconst
+
+summary(mm1_1)
+summary(mm1_2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ```{r}
 calculate_polity_scores <- function(data) {
   # Democracy Score
