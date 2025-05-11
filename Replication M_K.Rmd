@@ -1,0 +1,767 @@
+---
+title: 'Replication: MILNER AND KUBOTA'
+author: "Wyatt King"
+date: "2025-04-13"
+output: html_document
+---
+
+```{r}
+# Load required packages
+library(haven)
+library(dplyr)
+library(readr)
+library(stringr)
+
+# Load data
+mk_data <- read_dta("LDC_IO_replication.dta")
+polity <- read_csv("Polity_Data.csv")
+
+# === Step 1: Clean Polity country names ===
+polity$country <- gsub(" ", "", polity$country)
+polity$country <- gsub("\\(Burma\\)", "", polity$country)
+polity$country <- gsub("Kyrgyzstan", "KyrgyzRepublic", polity$country)
+colnames(polity)<- toupper(colnames(polity))
+
+# === Step 2: Calculate custom Polity scores ===
+calculate_new_polity_scores <- function(data) {
+  data$DEMOC_NO_XCONST <- with(data, 
+    ifelse(XRCOMP == 3, 2, ifelse(XRCOMP == 2, 1, 0)) +
+    ifelse((XRCOMP %in% c(2, 3)) & (XROPEN %in% c(3, 4)), 1, 0) +
+    ifelse(PARCOMP == 5, 3, 
+           ifelse(PARCOMP == 4, 2, 
+                  ifelse(PARCOMP == 3, 1, 0)))
+  )
+
+  data$AUTO_NO_XCONST <- with(data, 
+    ifelse(XRCOMP == 1, 2, 0) +
+    ifelse(XRCOMP == 1 & XROPEN %in% c(1, 2), 1, 0) +
+    ifelse(PARREG == 4, 2, 
+           ifelse(PARREG == 3, 1, 0)) +
+    ifelse(PARCOMP == 1, 2, 
+           ifelse(PARCOMP == 2, 1, 0))
+  )
+
+  data$POLITY_NO_XCONST <- data$DEMOC_NO_XCONST - data$AUTO_NO_XCONST
+  return(data)
+}
+
+# Apply the score calculation
+polity <- calculate_new_polity_scores(polity)
+
+```
+
+```{r}
+# Make sure mk_data's country names are formatted similarly to polity$country
+mk_data <- mk_data %>%
+  mutate(
+    merge_country = str_to_lower(str_trim(ctylabel)),
+    merge_country = gsub(" ", "", merge_country)
+  )
+
+# Named vector for harmonization
+harmonization_map <- c(
+  "americansamoa" = "americansamoa",
+  "antigua&barbuda" = "antiguaandbarbuda",
+  "aruba" = "aruba",
+  "bahamas" = "bahamas,the",
+  "barbados" = "barbados",
+  "belize" = "belize",
+  "bermuda" = "bermuda",
+  "brunei" = "brunei",
+  "burkinafaso" = "burkinafaso",
+  "capeverde" = "capeverde",
+  "caymanislands" = "caymanislands",
+  "centralafricanrepublic" = "centralafricanrepublic",
+  "congo" = "congo",
+  "costarica" = "costarica",
+  "coted'ivoire" = "coted'ivoire",
+  "czechrepublic" = "czechrepublic",
+  "dominica" = "dominica",
+  "dominicanrepublic" = "dominicanrepublic",
+  "elsalvador" = "elsalvador",
+  "equatorialguinea" = "equatorialguinea",
+  "kyrgyzrepublic" = "kyrgyzrepublic"
+)
+
+# Apply harmonization
+mk_data <- mk_data %>%
+  mutate(merge_country = recode(merge_country, !!!harmonization_map),
+         merge_year= date)
+
+colnames(polity)<- tolower(colnames(polity))
+polity_data <- polity %>%
+  mutate(
+    merge_country = str_to_lower(str_trim(country)),
+    merge_year = year
+  )
+
+```
+
+
+```{r}
+merged_data <- mk_data %>%
+  left_join(polity_data, by = c("merge_country", "merge_year"))
+
+# Diagnostics
+cat("Total MK observations:", nrow(mk_data), "\n")
+cat("Matched with Polity:", sum(!is.na(merged_data$democ)), "\n")
+```
+
+```{r}
+lag_variable <- function(x, n = 1) {
+  if (!is.numeric(n) || n < 0) {
+    stop("n must be a non-negative integer")
+  }
+  
+  if (n == 0) {
+    return(x)
+  }
+  
+  return(c(rep(NA, n), head(x, -n)))
+}
+
+merged_data$l1exconst<-lag_variable(merged_data$exconst)
+merged_data$l1polity_no_xconst<-lag_variable(merged_data$polity_no_xconst)
+```
+
+```{r}
+convert_dict<- function(x){
+  if(is.na(x)){
+    return(NA)
+  }
+  else if(x==8){
+    return(4)
+  }
+  else if(x==6 | x==1){
+    return(3)
+  }
+  else if(x==4){
+    return(2)
+  }
+  else if(x==2){
+    return(0)
+  }
+  else{
+    return(1)
+  }
+}
+
+
+merged_data$l1dictator1_2<- sapply(merged_data$l1dictator1, convert_dict)
+```
+
+
+```{r}
+mc_1<- c("l1exconst", "l1polity_no_xconst", "l1dictator1_2", "l1lnpop", "l1gdp_pc", "newtar", "date", "country")
+```
+
+```{r}
+mdf_1<- na.omit(polity_mk[,mc_1])
+
+mm1_1<- prais::prais_winsten(newtar~l1exconst+l1lnpop+l1gdp_pc+date+country, data=mdf_1, index=c("date", "country"))
+mm1_2<- lm(newtar~l1exconst*as.factor(l1dictator1_2)+l1lnpop+l1gdp_pc+date+country, data=mdf_1, index=c("date", "country"))
+
+mdf_1$l1exconst
+
+summary(mm1_1)
+summary(mm1_2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# OLD
+
+```{r}
+library(pcse)
+library(forecast)
+library(tidyr)
+library(dplyr)
+library(plm)
+require(devtools)
+library(nlme)
+library(devtools)
+library(httr)
+```
+
+```{r}
+devtools::install_github("vdeminstitute/vdemdata")
+```
+
+```{r}
+getwd()
+data<- haven::read_dta("LDC_IO_replication.dta")
+```
+
+```{r}
+data$l1ecris2<- as.factor(data$l1ecris2)
+data$country<- as.factor(data$country)
+data$l1aclpn<- as.factor(data$l1aclpn)
+```
+
+### OLS Models
+
+Recreating Table 2
+
+```{r}
+c1<- c("l1polity", "l1lnpop", "l1gdp_pc", "newtar", "date", "country")
+c2<- c("l1ecris2", "l1polity", "l1lnpop", "l1gdp_pc", "newtar", "date", "country")
+c3<- c("bpc1", "l1polity", "l1lnpop", "l1gdp_pc", "newtar", "date", "country") 
+c4<- c("l1signed", "l1polity", "l1lnpop", "l1gdp_pc", "newtar", "date", "country")
+c5<- c("l1usheg", "l1polity", "l1lnpop", "l1gdp_pc", "newtar", "date", "country")
+c6<- c("l1fiveop", "l1polity", "l1lnpop", "l1gdp_pc", "newtar", "date", "country")
+
+l1<-list(c1, c2, c3, c4, c5, c6)
+```
+
+```{r}
+l2<- vector(mode="list", length(l1))
+for(j in seq_along(l1)){
+  columns<- l1[[j]]
+  d1<- data[, columns]
+  d1<- na.omit(d1)
+  model<-prais::prais_winsten(newtar~., data=d1, index=c("date", "country"))
+  sum_model<- summary(model)
+  results<- sum_model$coefficients
+  l2[[j]]<- sum_model
+}
+```
+
+Recreating Table 3
+
+```{r}
+c3_1<- c("l1polity", "l1lnpop", "l1gdp_pc", "l1ecris2", "l1bpc1", "l1signed", "l1office", "l1avnewtar", "newtar", "date", "country")
+c3_2<- c("l1polity", "l1lnpop", "l1gdp_pc", "l1ecris2", "l1bpc1", "l1signed", "l1office", "l1gatt_wto_new", "newtar", "date", "country")
+c3_3<- c("l1polity", "l1lnpop", "l1gdp_pc", "l1ecris2", "l1bpc1", "l1signed", "l1office", "l1gatt_wto_new", "l1fdi", "l1avnewtar", "newtar", "date", "country")
+c3_4<- c("l1aclpn", "l1lnpop", "l1gdp_pc", "l1ecris2", "l1bpc1", "l1signed", "l1office", "l1gatt_wto_new", "l1fdi", "l1avnewtar", "newtar", "date", "country")
+l3<- list(c3_1, c3_2, c3_3, c3_4)
+```
+
+```{r}
+l4<- vector(mode="list", length(l3))
+for(j in seq_along(l3)){
+  columns<- l3[[j]]
+  d2<- data[, colnames(data) %in% columns]
+  d2<- na.omit(d2)
+  model<-prais::prais_winsten(newtar~., data=d2, index=c("date", "country"))
+  sum_model<- summary(model)
+  results<- sum_model$coefficients
+  l4[[j]]<- sum_model
+}
+l4[[4]]
+```
+
+```{r}
+c3_1<- c("l1polity", "l1lnpop", "l1gdp_pc", "l1ecris2", "l1bpc1", "l1signed", "l1office", "l1avnewtar", "newtar", "date", "country")
+c3_1<- c("l1polity", "l1lnpop", "l1gdp_pc", "l1ecris2", "l1bpc1", "l1signed", "l1office", "l1avnewtar", "newtar", "date", "country")
+
+d_test<- na.omit(data[, c3_1])
+dim(d_test)
+summary(lm(newtar~., data=d_test))
+
+pw_test<-prais::prais_winsten(newtar~., data=d_test, index=c("date", "country"))
+summary(pw_test)
+```
+
+### Test Theory
+
+Merging Polity Data
+
+```{r}
+polity_xls<- GET("http://www.systemicpeace.org/inscr/p5v2018.xls")
+temp_file <- tempfile(fileext = ".xls")
+writeBin(content(polity_xls, "raw"), temp_file)
+polity <- readxl::read_excel(temp_file)
+```
+
+```{r}
+fix_eyear<-function(x){
+  if(x > 2020){
+    return(2020)
+  }
+  else{
+    return(x)
+  }
+}
+
+polity$eyear<- sapply(polity$eyear, fix_eyear)
+```
+
+```{r}
+polity$country<-gsub(" ", "", polity$country)
+polity$country<- gsub("\\(Burma\\)", "", polity$country)
+polity$country<- gsub("Kyrgyzstan", "KyrgyzRepublic", polity$country)
+colnames(polity)[5]<- "ctylabel"
+colnames(polity)<- toupper(colnames(polity))
+```
+
+Polity codes countries such that it gives you a range for when they have a particular scoring, with byear marking the beginning of a regime year and eyear marking the end of a regime year.
+
+```{r}
+calculate_new_polity_scores <- function(data) {
+  # Democracy Score
+  data$DEMOC_NO_XCONST <- with(data, 
+    ifelse(XRCOMP == 3, 2, ifelse(XRCOMP == 2, 1, 0)) +
+    ifelse((XRCOMP %in% c(2, 3)) & (XROPEN %in% c(3, 4)), 1, 0) +
+    ifelse(PARCOMP == 5, 3, 
+           ifelse(PARCOMP == 4, 2, 
+                  ifelse(PARCOMP == 3, 1, 0)))
+  )
+
+  # Autocracy Score
+  data$AUTO_NO_XCONST <- with(data, 
+    ifelse(XRCOMP == 1, 2, 0) +
+    ifelse(XRCOMP == 1 & XROPEN %in% c(1, 2), 1, 0) +
+    ifelse(PARREG == 4, 2, 
+           ifelse(PARREG == 3, 1, 0)) +
+    ifelse(PARCOMP == 1, 2, 
+           ifelse(PARCOMP == 2, 1, 0))
+  )
+  
+  data$POLITY_NO_XCONST <- data$DEMOC_NO_XCONST - data$AUTO_NO_XCONST
+
+  return(data)
+}
+```
+
+```{r}
+polity<- calculate_new_polity_scores(polity)
+```
+
+```{r}
+colnames(polity)[6]<- "date"
+```
+
+```{r}
+polity_mk<-merge(data, polity, by=c("ctylabel", "date"))
+polity_mk$country<- as.factor(polity_mk$country)
+```
+
+```{r}
+
+```
+
+
+```{r}
+polity_mk
+unique(data$ctylabel[!(data$ctylabel %in% intersect(polity_mk$ctylabel, data$ctylabel))])
+unique(polity$ctylabel)
+
+data[data$country== 512,]
+unique(data$country)
+```
+
+
+```{r}
+lag_variable <- function(x, n = 1) {
+  if (!is.numeric(n) || n < 0) {
+    stop("n must be a non-negative integer")
+  }
+  
+  if (n == 0) {
+    return(x)
+  }
+  
+  return(c(rep(NA, n), head(x, -n)))
+}
+
+polity_mk$l1exconst<-lag_variable(polity_mk$exconst)
+polity_mk$l1polity_no_xconst<-lag_variable(polity_mk$polity_no_xconst)
+```
+
+```{r}
+convert_dict<- function(x){
+  if(is.na(x)){
+    return(NA)
+  }
+  else if(x==8){
+    return(4)
+  }
+  else if(x==6 | x==1){
+    return(3)
+  }
+  else if(x==4){
+    return(2)
+  }
+  else if(x==2){
+    return(0)
+  }
+  else{
+    return(1)
+  }
+}
+
+
+polity_mk$l1dictator1_2<- sapply(polity_mk$l1dictator1, convert_dict)
+```
+
+
+```{r}
+mc_1<- c("l1exconst", "l1polity_no_xconst", "l1dictator1_2", "l1lnpop", "l1gdp_pc", "newtar", "date", "country")
+```
+
+```{r}
+mdf_1<- na.omit(polity_mk[,c1])
+
+mm1_1<- prais::prais_winsten(newtar~., data=mdf_1, index=c("date", "country"))
+mm1_2<- lm(newtar~l1exconst*as.factor(l1dictator1_2)+l1lnpop+l1gdp_pc+date+country, data=mdf_1, index=c("date", "country"))
+
+mdf_1$l1exconst
+
+summary(mm1_1)
+summary(mm1_2)
+```
+
+
+
+
+
+
+
+
+
+```{r}
+row_1<- polity_2[1,]
+df<- data.frame()
+for(i in seq_len(row_1$diff_year)){
+  df<- rbind(df, row_1)
+}
+df$year<-row_1$byear+1:row_1$diff_year
+```
+
+
+
+
+
+```{r}
+sort(unique(polity$date))
+data
+intersect(polity$ctylabel, data$ctylabel)
+```
+
+
+```{r}
+test_polity<-polity[polity$country %in% intersect(polity$country, data$ctylabel),]
+test_polity[test_polity$byear]
+unique(data$date)
+```
+
+```{r}
+colnames(polity_update)[ncol(polity_update)]<- "date"
+```
+
+```{r}
+test_df<- merge(data, polity_update, by=c("ctylabel", "date"))
+```
+
+
+```{r}
+shared<-intersect(polity$country, data$ctylabel)
+mk_not_in_polity<-unique(data$ctylabel[!(data$ctylabel %in% shared)])
+polity_not_in_mk<-unique(polity$country[!(polity$country %in% shared)])
+
+sort(mk_not_in_polity)
+sort(polity_not_in_mk)
+
+gsub(" ", "", polity_not_in_mk)
+
+x<- "Central African Republic"
+put_together<- paste0(break_up[[1]])
+
+strsplit(polity_not_in_mk, " ")
+
+sort(polity_not_in_mk)
+```
+
+```{r}
+unique(polity$country)
+```
+
+
+
+
+### OLS
+
+```{r}
+columns_to_check <- c("l1polity", "l1lnpop", "l1gdp_pc", "newtar", "date", "country")
+clean_data <- data %>%
+  filter(if_all(all_of(columns_to_check), ~ !is.na(.)))
+clean_data$country<- as.factor(clean_data$country)
+```
+
+```{r}
+# Create a lag function
+lag_variable <- function(x, k = 1) {
+  if (!is.numeric(x)) stop("Input must be a numeric vector.")
+  if (k < 0) stop("Lag value k must be non-negative.")
+  
+  # Prepend NA values to shift the vector
+  lagged <- c(rep(NA, k), x[1:(length(x) - k)])
+  return(lagged)
+}
+```
+
+
+```{r}
+clean_data$l2gdp_pc<- lag_variable(clean_data$gdp_pc_95d, k=2)
+clean_data$l2lnpop<- lag_variable(clean_data$l1lnpop, k=1)
+clean_data$l1tariff<- lag_variable(clean_data$avnewtar, k=1)
+clean_data$l1date<- clean_data$date -1
+```
+
+
+```{r}
+tarriff_dif<- vector(mode= "numeric", length= nrow(clean_data))
+tarriff_dif[1]<- NA
+for(j in seq_along(clean_data$avnewtar)[2:nrow(clean_data)]){
+  difference<- clean_data$avnewtar[j]-clean_data$avnewtar[j-1]
+  tarriff_dif[j]<- difference
+}
+clean_data$tarriff_dif<- tarriff_dif
+```
+
+```{r}
+gdp_dif<- vector(mode= "numeric", length= nrow(clean_data))
+gdp_dif[1]<- NA
+for(j in seq_along(clean_data$l1gdp_pc)[2:nrow(clean_data)]){
+  difference<- clean_data$l1gdp_pc[j]-clean_data$l1gdp_pc[j-1]
+  gdp_dif[j]<- difference
+}
+clean_data$gdp_dif<- gdp_dif
+```
+
+```{r}
+pop_diff<- vector(mode= "numeric", length= nrow(clean_data))
+pop_diff[1]<- NA
+for(j in seq_along(clean_data$l1lnpop)[2:nrow(clean_data)]){
+  difference<- clean_data$l1lnpop[j]-clean_data$l1lnpop[j-1]
+  pop_diff[j]<- difference
+}
+clean_data$pop_diff<- pop_diff
+```
+
+```{r}
+polity_diff<- clean_data$l1polity-clean_data$l2polity
+clean_data$polity_diff<- polity_diff
+```
+
+```{r}
+date_diff<- vector(mode= "numeric", length= nrow(clean_data))
+date_diff[1]<- NA
+for(j in seq_along(clean_data$date)[2:nrow(clean_data)]){
+  difference<- clean_data$date[j]-clean_data$date[j-1]
+  date_diff[j]<- difference
+}
+clean_data$date_diff<- date_diff
+```
+
+
+```{r}
+m2<-lm(tarriff_dif~polity_diff+pop_diff+date_diff+gdp_dif+country, data=clean_data)
+summary(m2)
+```
+
+
+```{r}
+m1<- lm(newtar~ l1polity+lnpop+l1gdp_pc+date+country, data=clean_data)
+summary(m1)
+
+pw<-prais::prais_winsten(newtar~ l1polity+l1lnpop+l1gdp_pc+date+country, data=clean_data, index = c("date", "country"))
+
+pw_2<- plm::pra
+
+summary(pw)
+
+co_proc<-orcutt::cochrane.orcutt(m1, convergence=8, max.iter=500)
+rho<-co_proc$rho
+```
+
+```{r}
+clean_data$gdppc_tr<- clean_data$l1gdp_pc-clean_data$l2gdp_pc*rho
+clean_data$polity_tr<- clean_data$l1polity-clean_data$l2polity*rho
+clean_data$lnpop_tr<- clean_data$l1lnpop-clean_data$l2lnpop*rho
+clean_data$tariff_tr<-clean_data$avnewtar - clean_data$l1tariff*rho
+clean_data$date_tr<- clean_data$date - clean_data$l1date*rho
+```
+
+```{r}
+m2<-plm(tariff_tr ~ polity_tr + lnpop_tr + gdppc_tr+date_tr+country, data = pdata.frame(clean_data, index = c("country", "date")), model = "pooling")
+summary(m2)
+```
+
+
+```{r}
+m2<- lm(tariff_tr~ polity_tr+lnpop_tr+gdppc_tr+date_tr+country, data=clean_data)
+summary(m2)
+```
+
+
+```{r}
+p1<-hist(clean_data$polity_tr)
+p2<-hist(clean_data$l1polity)
+plot(p1)
+plot(p2)
+```
+
+
+```{r}
+m2<- lm(newtar~ polity_tr+l1lnpop+l1gdp_pc+date+country, data=clean_data)
+summary(m2)
+pcse(m2, groupN = as.factor(clean_data$country), groupT = clean_data$date, pairwise = TRUE)
+```
+
+
+
+```{r}
+lm_model <- lm(newtar ~ polity_tr + gdppc_tr + lnpop_tr + date+ as.factor(country), data = clean_data)
+summary(lm_model)
+```
+
+
+### OLS No Lags
+
+
+```{r}
+colnames(data)
+no_lags_cleaned<- data[colnames(data) %in% c("newtar", "polityiv_update2", "lnpop", "gdp_pc_95d", "country", "date")]
+no_lags_cleaned<-na.omit(no_lags_cleaned)
+no_lags_cleaned$panelid<- mapply(get_id, x= no_lags_cleaned$country, y=no_lags_cleaned$date)
+```
+
+```{r}
+pdata <- pdata.frame(no_lags_cleaned, index = c("country", "date"))
+
+model1 <- plm(newtar ~ polityiv_update2 + gdp_pc_95d + lnpop, 
+              data = pdata, 
+              model = "within", 
+              effect = "individual")
+
+summary(model1)
+```
+
+```{r}
+# First, fit using lm to get OLS residuals
+lm_model <- lm(newtar ~ polityiv_update2 + gdp_pc_95d + lnpop + factor(country), data = pdata)
+
+# Then get PCSEs
+pcse_model <- pcse(lm_model, groupN = pdata$country, groupT = pdata$date)
+
+summary(pcse_model)
+```
+
+
+
+```{r}
+m1<- lm(newtar~polityiv_update2+lnpop+gdp_pc_95d+as.factor(country), data=no_lags_cleaned)
+summary(m1)
+```
+
+
+```{r}
+model_ar1<-nlme::gls(
+  newtar ~ polityiv_update2 + lnpop + gdp_pc_95d,
+  data=no_lags_cleaned,
+  correlation= corAR1(value=0.9, form = ~ date | country, T)
+)
+summary(model_ar1)
+```
+
+
+### OLS
+
+```{r}
+get_id<- function(x, y){
+  id<- paste0(x, "-", y)
+  return(id)
+}
+
+data_cleaned<- data[colnames(data) %in% c("newtar", "l1polity", "l1lnpop", "l1gdp_pc", "country", "date")]
+data_cleaned<-na.omit(data_cleaned)
+data_cleaned$panelid<- mapply(get_id, x= data_cleaned$country, y=data_cleaned$date)
+data_cleaned$panelid<-as.numeric(as.factor(data_cleaned$panelid))
+```
+
+```{r}
+# Convert to factor first for safety
+data_cleaned <- data_cleaned %>%
+  mutate(country = as.factor(country),
+         date = as.Date(date))  # Make sure date is actual date object
+
+# Create balanced panel
+balanced_data <- data_cleaned %>%
+  complete(country, date) 
+```
+
+```{r}
+data_cleaned$country<- as.factor(data_cleaned$country)
+model_ar1<-nlme::gls(
+  newtar ~ l1polity + l1lnpop + l1gdp_pc,
+  data=data_cleaned,
+  correlation= corAR1(value=0.9, form = ~ date | country, T)
+)
+summary(model_ar1)
+
+model_ols<- lm(newtar ~ l1polity + l1lnpop + l1gdp_pc, data=data_cleaned)
+summary(model_ols)
+
+orcutt::cochrane.orcutt(model_ols, convergence=8, max.iter=500)
+
+corAR1(value=0.804736, form= ~ date | country)
+
+?corAR1
+summary(model_ar1)
+```
+
+
+```{r}
+# We start building our model
+model <- lm(newtar ~ l1polity + l1lnpop + l1gdp_pc + as.factor(country) +as.numeric(date), data = data_cleaned)
+summary(model)
+```
+
+```{r}
+plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + as.factor(country) +as.numeric(date), data=data_cleaned, index=c("country", "date", model="within"))
+
+?plm
+```
+
+
+```{r}
+xreg<- as.matrix(data_cleaned)
+arima(data_cleaned$newtar, order=c(1,0,0), xreg=xreg)
+```
+
+```{r}
+panel_model<-plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + country +as.numeric(date), data = balanced_data)
+```
+
+
+```{r}
+# Durbin Watson test for serial correlation
+car::durbinWatsonTest(model)
+```
+
+```{r}
+orcutt::cochrane.orcutt(model, convergence=8, max.iter=500)
+
+??cochrane.orcutt
+```
+
+
+```{r}
+model <- plm(newtar ~ l1polity + l1lnpop + l1gdp_pc + country+ as.factor(date), data = pdata.frame(data_cleaned, index = c("country", "date")), model = "pooling")
+
+summary(model)
+```
+
