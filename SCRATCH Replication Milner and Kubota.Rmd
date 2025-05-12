@@ -5,14 +5,13 @@ date: "2025-04-13"
 output: html_document
 ---
 
-
-
 ```{r}
 # Load required packages
 library(haven)
 library(dplyr)
 library(readr)
 library(stringr)
+library(stargazer)
 
 # Load data
 mk_data <- read_dta("LDC_IO_replication.dta")
@@ -23,7 +22,39 @@ polity$country <- gsub(" ", "", polity$country)
 polity$country <- gsub("\\(Burma\\)", "", polity$country)
 polity$country <- gsub("Kyrgyzstan", "KyrgyzRepublic", polity$country)
 colnames(polity)<- toupper(colnames(polity))
+```
 
+```{r}
+get_rid_of_77<- function(x){
+  if(is.na(x)){
+    return(x)
+  }
+  else if(!is.numeric(x)){
+    return(x)
+  }
+  else if(x<= -66){
+    return(NA)
+  }
+  else{
+    return(x)
+  }
+}
+
+apply_function_to_dataframe <- function(df, func) {
+  df[] <- lapply(df, function(col) {
+    if(is.numeric(col)) {
+      return(sapply(col, func))
+    } else {
+      return(col)
+    }
+  })
+  return(df)
+}
+
+polity<-apply_function_to_dataframe(polity, get_rid_of_77)
+```
+
+```{r}
 # === Step 2: Calculate custom Polity scores ===
 calculate_new_polity_scores <- function(data) {
   data$DEMOC_NO_XCONST <- with(data, 
@@ -49,7 +80,6 @@ calculate_new_polity_scores <- function(data) {
 
 # Apply the score calculation
 polity <- calculate_new_polity_scores(polity)
-
 ```
 
 ```{r}
@@ -99,31 +129,69 @@ polity_data <- polity %>%
 
 ```
 
+```{r}
+lag_within_country <- function(df, var, new_var_name, lag_n = 1) {
+  df <- df %>%
+    group_by(country) %>%
+    mutate(
+      !!new_var_name := lag(get(var), n = lag_n, order_by = year)
+    ) %>%
+    ungroup()  # To remove the grouping after applying the lag
+  
+  return(df)
+}
+
+colnames(polity_data)
+polity_data<-lag_within_country(df=polity_data, var="polity_no_xconst", new_var_name="l1_polity_no_xconst")
+polity_data<-lag_within_country(df=polity_data, var="xconst", new_var_name="l1_xconst")
+```
+
 
 ```{r}
 merged_data <- mk_data %>%
   left_join(polity_data, by = c("merge_country", "merge_year"))
-
+colnames(merged_data)
 # Diagnostics
 cat("Total MK observations:", nrow(mk_data), "\n")
 cat("Matched with Polity:", sum(!is.na(merged_data$democ)), "\n")
 ```
 
 ```{r}
-lag_variable <- function(x, n = 1) {
-  if (!is.numeric(n) || n < 0) {
-    stop("n must be a non-negative integer")
-  }
-  
-  if (n == 0) {
-    return(x)
-  }
-  
-  return(c(rep(NA, n), head(x, -n)))
-}
+merged_data$aclpn2<- as.factor(merged_data$aclpn)
+```
 
-merged_data$l1exconst<-lag_variable(merged_data$exconst)
-merged_data$l1polity_no_xconst<-lag_variable(merged_data$polity_no_xconst)
+```{r}
+mc_1<- c("l1_xconst", "l1aclpn", "l1lnpop", "l1gdp_pc", "newtar", "date", "ctylabel")
+
+mdf_1<- na.omit(merged_data[mc_1])
+mdf_1$l1aclpn<- as.factor(mdf_1$l1aclpn)
+
+mm1_1<- prais::prais_winsten(newtar~l1_xconst*l1aclpn+l1lnpop+l1gdp_pc+date+as.factor(ctylabel), data=mdf_3, index=c("date", "ctylabel"))
+sum_mm1<-summary(mm1_1)
+```
+
+```{r}
+mc_2<- c("l1_xconst", "l1aclpn", "l1lnpop", "l1gdp_pc", "l1ecris2", "l1bpc1", "l1signed", "l1office", "l1avnewtar", "l1gatt_wto_new", "l1fdi", "newtar", "date", "ctylabel")
+mdf_2<- na.omit(merged_data[mc_2])
+```
+
+```{r}
+mm2<- prais::prais_winsten(newtar~.+l1_xconst:l1aclpn, data=mdf_2, index = c("date", "ctylabel"))
+sum_mm2<-summary(mm2)
+```
+
+```{r}
+mc_3<- c("l1_xconst", "l1_polity_no_xconst", "l1lnpop", "l1gdp_pc", "newtar", "date", "ctylabel")
+
+mdf_3<- na.omit(merged_data[mc_3])
+mdf_3$l1aclpn<- as.factor(mdf_1$l1aclpn)
+
+mm3<- prais::prais_winsten(newtar~l1_xconst*l1_polity_no_xconst+l1lnpop+l1gdp_pc+date+as.factor(ctylabel), data=mdf_3, index=c("date", "ctylabel"))
+sum_mm3<-summary(mm3)
+```
+
+```{r}
+stargazer(sum_mm1, sum_mm2, sum_mm3)
 ```
 
 ```{r}
@@ -151,35 +219,7 @@ convert_dict<- function(x){
 
 merged_data$l1dictator1_2<- sapply(merged_data$l1dictator1, convert_dict)
 ```
-
-
-```{r}
-mc_1<- c("l1exconst", "l1polity_no_xconst", "l1dictator1_2", "l1lnpop", "l1gdp_pc", "newtar", "date", "country")
 ```
-
-```{r}
-mdf_1<- na.omit(polity_mk[,mc_1])
-
-mm1_1<- prais::prais_winsten(newtar~l1exconst+l1lnpop+l1gdp_pc+date+country, data=mdf_1, index=c("date", "country"))
-mm1_2<- lm(newtar~l1exconst*as.factor(l1dictator1_2)+l1lnpop+l1gdp_pc+date+country, data=mdf_1, index=c("date", "country"))
-
-mdf_1$l1exconst
-
-summary(mm1_1)
-summary(mm1_2)
-```
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -221,110 +261,6 @@ calculate_polity_scores <- function(data) {
   return(data)
 }
 ```
-
-
-
-
-
-
-```{r}
-library(stats)
-```
-
-
-```{r}
-perform_prais_winsten_panel <- function(data, response_var, predictor_vars,
-                                        country_var, time_var,
-                                        max_iter = 10, tol = 1e-5, include_time_fe = TRUE) {
-  # Ensure categorical and panel IDs are correctly typed
-  data[[time_var]] <- as.integer(data[[time_var]])  # For sorting
-
-  # Sort data by panel and time
-  data <- data[order(data[[country_var]], data[[time_var]]), ]
-
-  # Create fixed effects dummies if needed
-  fe_terms <- c()
-  if (include_time_fe) fe_terms <- c(fe_terms, paste0("factor(", time_var, ")"))
-  fe_terms <- c(fe_terms, paste0("factor(", country_var, ")"))
-
-  # Build formula
-  all_predictors <- c(predictor_vars, fe_terms)
-  all_predictors<- paste(all_predictors, collapse = " + ")
-  model_formula <- stats::as.formula(paste(response_var, "~", all_predictors))
-
-  # Initial OLS
-  ols_model <- lm(model_formula, data = data)
-  residuals_prev <- residuals(ols_model)
-
-  for (i in 1:max_iter) {
-    # Estimate rho separately per country and average (or optionally median or weighted)
-    data$residuals_prev <- residuals_prev
-    rho_values <- by(data, data[[country_var]], function(panel_data) {
-      e <- panel_data$residuals_prev
-      if (length(e) < 2) return(NA)
-      rho_model <- lm(e[-1] ~ e[-length(e)] - 1)
-      coef(rho_model)
-    })
-    rho <- mean(unlist(rho_values), na.rm = TRUE)
-
-    # Transform y and X
-    y <- data[[response_var]]
-    X <- model.matrix(model_formula, data = data)
-
-    y_star <- numeric(nrow(data))
-    X_star <- matrix(0, nrow = nrow(data), ncol = ncol(X))
-
-    for (cid in levels(data[[country_var]])) {
-      idx <- which(data[[country_var]] == cid)
-      y_panel <- y[idx]
-      X_panel <- X[idx, , drop = FALSE]
-      if (length(idx) < 2) {
-        y_star[idx] <- y_panel
-        X_star[idx, ] <- X_panel
-      } else {
-        y_star[idx[1]] <- sqrt(1 - rho^2) * y_panel[1]
-        y_star[idx[-1]] <- y_panel[-1] - rho * y_panel[-length(y_panel)]
-
-        X_star[idx[1], ] <- sqrt(1 - rho^2) * X_panel[1, ]
-        X_star[idx[-1], ] <- X_panel[-1, ] - rho * X_panel[-nrow(X_panel), ]
-      }
-    }
-
-    # Refit
-    pw_model <- lm(y_star ~ X_star)
-    residuals_new <- residuals(pw_model)
-
-    if (sqrt(mean((residuals_new - residuals_prev)^2)) < tol) break
-    residuals_prev <- residuals_new
-  }
-
-  return(summary(pw_model))
-}
-```
-
-```{r}
-?as.formula
-```
-
-
-```{r}
-colnames(d1)
-pw_test<-perform_prais_winsten_panel(data=d1, response_var = "newtar", 
-                            predictor_vars=c("l1fiveop", "l1polity", "l1lnpop", "l1gdp_pc"),
-                            country_var = "country",
-                            time_var= "date",
-                            max_iter = 20,
-                            tol = 1e-5, 
-                            include_time_fe = TRUE)
-```
-
-
-
-
-
-
-
-
 
 
 
