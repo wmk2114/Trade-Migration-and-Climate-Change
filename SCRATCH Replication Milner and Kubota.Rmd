@@ -157,16 +157,22 @@ cat("Matched with Polity:", sum(!is.na(merged_data$democ)), "\n")
 ```
 
 ```{r}
+cor_test<- merged_data[is.na(merged_data$l1aclpn)==F & is.na(merged_data$l1_xconst)==F,]
+cor(cor_test$l1aclpn, cor_test$l1_xconst)
+```
+
+
+```{r}
 merged_data$aclpn2<- as.factor(merged_data$aclpn)
 ```
 
 ```{r}
-mc_1<- c("l1_xconst", "l1aclpn", "l1lnpop", "l1gdp_pc", "newtar", "date", "ctylabel")
+mc_1<- c("l1_xconst", "l1aclpn", "l1_polity_no_xconst", "l1lnpop", "l1gdp_pc", "newtar", "date", "ctylabel")
 
 mdf_1<- na.omit(merged_data[mc_1])
 mdf_1$l1aclpn<- as.factor(mdf_1$l1aclpn)
 
-mm1_1<- prais::prais_winsten(newtar~l1_xconst*l1aclpn+l1lnpop+l1gdp_pc+date+as.factor(ctylabel), data=mdf_3, index=c("date", "ctylabel"))
+mm1_1<- prais::prais_winsten(newtar~l1_xconst*l1aclpn+l1_polity_no_xconst+l1lnpop+l1gdp_pc+date+as.factor(ctylabel), data=mdf_1, index=c("date", "ctylabel"))
 sum_mm1<-summary(mm1_1)
 ```
 
