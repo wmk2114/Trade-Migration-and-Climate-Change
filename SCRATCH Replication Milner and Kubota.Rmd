@@ -263,17 +263,61 @@ for(j in seq_along(l1)){
 ```
 
 ```{r}
+put_everything_together<-function(estimate, error, p){
+  string<- paste0(estimate, " (", error, ")")
+  if(p<= 0.01){
+    string<- paste0(string, "***")
+  }
+  else if(p<=0.05 & p>0.01){
+    string<- paste0(string, "**")
+  }
+  else if(p<=0.1 & p>0.05){
+    string<- paste0(string, "*")
+  }
+  return(string)
+}
 
-coefs<- round(regs_1[[1]]$coefficients, 3)
+coefs<- signif(regs_1[[1]]$coefficients, 3)
+coefs<-coefs[!grepl("ctylabel", row.names(coefs)),]
+coefs<-coefs[!grepl("date", row.names(coefs)),]
+row.names(coefs)[1]<- "Constant"
+coefs<-coefs[c("XCONSTR:DD", row.names(coefs)[!grepl("XCONSTR:DD", row.names(coefs))]),]
 
+estimate<- coefs[1, 1]
+error<- coefs[1, 2]
+p<- coefs[1, 4]
+text<-put_everything_together(estimate, error, p)
 
 
 regs_1[[1]]$coefficients[1,]
 
 regs_1[[1]]$r.squared
 estimate<- round(regs_1[[1]]$coefficients[j, 1], 3)
-error<- 
-
+?round
+  
+```
+```{r}
+regs_1[[6]]
+for(j in seq_along(regs_1)){
+  df<-regs_1[[j]]
+  coefs<- signif(df$coefficients, 3)
+  coefs<-coefs[!grepl("ctylabel", row.names(coefs)),]
+  coefs<-coefs[!grepl("date", row.names(coefs)),]
+  row.names(coefs)[1]<- "Constant"
+  coefs<-coefs[c("XCONSTR:DD", row.names(coefs)[!grepl("XCONSTR:DD", row.names(coefs))]),]
+  
+  
+  
+  for(i in seq_len(nrow(coefs))){
+    estimate<- coefs[i, 1]
+    error<- coefs[i, 2]
+    p<- coefs[i, 4]
+    text<-put_everything_together(estimate, error, p)
+  }
+  
+  
+  
+}
 ```
 
 
