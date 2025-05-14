@@ -1,0 +1,398 @@
+---
+title: '[SCRATCH] Replication MK'
+author: "Wyatt King"
+date: "2025-04-13"
+output: html_document
+---
+
+```{r}
+# Load required packages
+library(haven)
+library(dplyr)
+library(readr)
+library(stringr)
+library(stargazer)
+library(purrr)
+library(tidyr)
+library(kable)
+library(modelsummary)
+
+# Load data
+mk_data <- read_dta("LDC_IO_replication.dta")
+polity <- read_csv("Polity_Data.csv")
+
+# === Step 1: Clean Polity country names ===
+polity$country <- gsub(" ", "", polity$country)
+polity$country <- gsub("\\(Burma\\)", "", polity$country)
+polity$country <- gsub("Kyrgyzstan", "KyrgyzRepublic", polity$country)
+colnames(polity)<- toupper(colnames(polity))
+```
+
+```{r}
+get_rid_of_77<- function(x){
+  if(is.na(x)){
+    return(x)
+  }
+  else if(!is.numeric(x)){
+    return(x)
+  }
+  else if(x<= -66){
+    return(NA)
+  }
+  else{
+    return(x)
+  }
+}
+
+apply_function_to_dataframe <- function(df, func) {
+  df[] <- lapply(df, function(col) {
+    if(is.numeric(col)) {
+      return(sapply(col, func))
+    } else {
+      return(col)
+    }
+  })
+  return(df)
+}
+
+polity<-apply_function_to_dataframe(polity, get_rid_of_77)
+```
+
+```{r}
+# === Step 2: Calculate custom Polity scores ===
+calculate_new_polity_scores <- function(data) {
+  data$DEMOC_NO_XCONST <- with(data, 
+    ifelse(XRCOMP == 3, 2, ifelse(XRCOMP == 2, 1, 0)) +
+    ifelse((XRCOMP %in% c(2, 3)) & (XROPEN %in% c(3, 4)), 1, 0) +
+    ifelse(PARCOMP == 5, 3, 
+           ifelse(PARCOMP == 4, 2, 
+                  ifelse(PARCOMP == 3, 1, 0)))
+  )
+
+  data$AUTO_NO_XCONST <- with(data, 
+    ifelse(XRCOMP == 1, 2, 0) +
+    ifelse(XRCOMP == 1 & XROPEN %in% c(1, 2), 1, 0) +
+    ifelse(PARREG == 4, 2, 
+           ifelse(PARREG == 3, 1, 0)) +
+    ifelse(PARCOMP == 1, 2, 
+           ifelse(PARCOMP == 2, 1, 0))
+  )
+
+  data$POLITY_NO_XCONST <- data$DEMOC_NO_XCONST - data$AUTO_NO_XCONST
+  return(data)
+}
+
+# Apply the score calculation
+polity <- calculate_new_polity_scores(polity)
+```
+
+```{r}
+# Make sure mk_data's country names are formatted similarly to polity$country
+mk_data <- mk_data %>%
+  mutate(
+    merge_country = str_to_lower(str_trim(ctylabel)),
+    merge_country = gsub(" ", "", merge_country)
+  )
+
+# Named vector for harmonization
+harmonization_map <- c(
+  "americansamoa" = "americansamoa",
+  "antigua&barbuda" = "antiguaandbarbuda",
+  "aruba" = "aruba",
+  "bahamas" = "bahamas,the",
+  "barbados" = "barbados",
+  "belize" = "belize",
+  "bermuda" = "bermuda",
+  "brunei" = "brunei",
+  "burkinafaso" = "burkinafaso",
+  "capeverde" = "capeverde",
+  "caymanislands" = "caymanislands",
+  "centralafricanrepublic" = "centralafricanrepublic",
+  "congo" = "congo",
+  "costarica" = "costarica",
+  "coted'ivoire" = "coted'ivoire",
+  "czechrepublic" = "czechrepublic",
+  "dominica" = "dominica",
+  "dominicanrepublic" = "dominicanrepublic",
+  "elsalvador" = "elsalvador",
+  "equatorialguinea" = "equatorialguinea",
+  "kyrgyzrepublic" = "kyrgyzrepublic"
+)
+
+# Apply harmonization
+mk_data <- mk_data %>%
+  mutate(merge_country = recode(merge_country, !!!harmonization_map),
+         merge_year= date)
+
+colnames(polity)<- tolower(colnames(polity))
+polity_data <- polity %>%
+  mutate(
+    merge_country = str_to_lower(str_trim(country)),
+    merge_year = year
+  )
+
+```
+
+```{r}
+lag_within_country <- function(df, var, new_var_name, lag_n = 1) {
+  df <- df %>%
+    group_by(country) %>%
+    mutate(
+      !!new_var_name := lag(get(var), n = lag_n, order_by = year)
+    ) %>%
+    ungroup()  # To remove the grouping after applying the lag
+  
+  return(df)
+}
+
+polity_data<-lag_within_country(df=polity_data, var="polity_no_xconst", new_var_name="l1_polity_no_xconst")
+polity_data<-lag_within_country(df=polity_data, var="xconst", new_var_name="l1_xconst")
+```
+
+```{r}
+rename_vars_for_table <- function(df) {
+  names(df)[names(df) == "l1_xconst"] <- "XCONSTR"
+  names(df)[names(df) == "l1aclpn"] <- "DD"
+  names(df)[names(df) == "l1_polity_no_xconst"] <- "VERTICAL"
+  names(df)[names(df) == "newtar"] <- "TARIFF"
+  names(df)[names(df) == "l1lnpop"] <- "LNPOP"
+  names(df)[names(df) == "l1gdp_pc"] <- "PCGDP"
+  names(df)[names(df) == "l1ecris2"] <- "ECCRISIS"
+  names(df)[names(df) == "l1bpc1"] <- "BPCRISIS"
+  names(df)[names(df) == "l1signed"] <- "IMF"
+  names(df)[names(df) == "l1usheg"] <- "USHEG"
+  names(df)[names(df) == "l1gatt_wto_new"] <- "GATT/WTO"
+  names(df)[names(df) == "l1avnewtar"] <- "AV TARIFF"
+  names(df)[names(df) == "l1office"] <- "OFFICE"
+   names(df)[names(df) == "l1fiveop"] <- "FIVEOPEN"
+  return(df)
+}
+```
+
+```{r}
+sum_stats_tab<-merged_data[vars_summary_stats]
+summary_df<-rename_vars_for_table(sum_stats_tab)
+```
+
+```{r}
+summary_table <- summary_df %>%
+  summarise(across(everything(), list(
+    n = ~sum(!is.na(.)),
+    mean = ~mean(., na.rm = TRUE),
+    sd = ~sd(., na.rm = TRUE),
+    min = ~min(., na.rm = TRUE),
+    max = ~max(., na.rm = TRUE)
+  ))) %>%
+  pivot_longer(cols = everything(),
+               names_to = c("variable", ".value"),
+               names_sep = "_") %>%
+  mutate(across(where(is.numeric), ~round(., 2))) %>%
+  arrange(variable)
+
+```
+
+```{r}
+colnames(summary_table)<- c("Variable", "Observations", "Mean", "Standard Deviation", "Minimum", "Maximum")
+```
+
+```{r}
+summary_table<-summary_table[c(c(10, 13, 12), 1:9, 11),]
+```
+
+### Models
+
+```{r}
+reg_data<-rename_vars_for_table(merged_data)
+reg_data[reg_data$ctylabel=="Chile",]
+```
+
+### Model 1
+
+```{r}
+c1<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "TARIFF", "date", "ctylabel")
+c2<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "ECCRISIS", "TARIFF", "date", "ctylabel")
+c3<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "BPCRISIS", "TARIFF", "date", "ctylabel")
+c4<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "IMF", "TARIFF", "date", "ctylabel")
+c5<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "USHEG", "TARIFF", "date", "ctylabel")
+c6<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "FIVEOPEN", "TARIFF", "date", "ctylabel")
+c7<- c("XCONSTR", "DD", "VERTICAL", "LNPOP", "PCGDP", "TARIFF", "date", "ctylabel")
+l1<- list(c1, c2, c3, c4, c5, c6, c7)
+```
+
+```{r}
+regs_1<- vector(mode="list", length = length(l1))
+for(j in seq_along(l1)){
+  get_cols<- l1[[j]]
+  mdf_1<- na.omit(reg_data[get_cols])
+  model1<- prais::prais_winsten(TARIFF~.+XCONSTR:DD, data=mdf_1, index=c("date", "ctylabel"))
+  sum_model<-summary(model1)
+  regs_1[[j]]<-sum_model
+}
+```
+
+```{r}
+put_everything_together<-function(estimate, error, p){
+  string<- paste0(estimate, " (", error, ")")
+  if(p<= 0.01){
+    string<- paste0(string, "***")
+  }
+  else if(p<=0.05 & p>0.01){
+    string<- paste0(string, "**")
+  }
+  else if(p<=0.1 & p>0.05){
+    string<- paste0(string, "*")
+  }
+  return(string)
+}
+```
+
+```{r}
+format_prais_model <- function(model) {
+  coefs <- signif(model$coefficients, 3)
+  
+  # Optional row filtering
+  coefs <- coefs[!grepl("ctylabel", rownames(coefs)), ]
+  coefs <- coefs[!grepl("date", rownames(coefs)), ]
+  
+  # Rename intercept and order if needed
+  rownames(coefs)[1] <- "Constant"
+  if ("XCONSTR:DD" %in% rownames(coefs)) {
+    coefs <- coefs[c("XCONSTR:DD", rownames(coefs)[rownames(coefs) != "XCONSTR:DD"]), ]
+  }
+  
+  formatted <- sapply(1:nrow(coefs), function(i) {
+    put_everything_together(coefs[i, 1], coefs[i, 2], coefs[i, 4])
+  })
+  
+  names(formatted) <- rownames(coefs)
+  
+  # Add bottom stats
+  formatted["Observations"] <- length(model$residuals)
+  formatted["R-squared"] <- round(model$r.squared, 3)
+  
+  return(formatted)
+}
+```
+
+
+```{r}
+# Apply to each model
+formatted_models <- lapply(regs_1, format_prais_model)
+
+# Combine into a data frame
+all_rows <- unique(unlist(lapply(formatted_models, names)))
+results_df <- data.frame(row.names = all_rows)
+
+for (i in seq_along(formatted_models)) {
+  model_vec <- formatted_models[[i]]
+  col <- rep("", length(all_rows))
+  names(col) <- all_rows
+  col[names(model_vec)] <- model_vec
+  results_df[[paste0("M", i)]] <- col
+}
+
+# View the formatted table
+print(results_df)
+export_ready<-results_df[c(3:4, 1, 5:6, 9:14, 2, 7:8),]
+write.csv(export_ready, "Regs1.csv")
+```
+
+### Models 2
+
+```{r}
+c8<- c("XCONSTR", "DD", "VERTICAL", "LNPOP", "ECCRISIS", "BPCRISIS", "AV TARIFF", "PCGDP", "OFFICE", "TARIFF", "date", "ctylabel")
+c9<- c("XCONSTR", "DD", "VERTICAL", "LNPOP", "ECCRISIS", "BPCRISIS", "AV TARIFF", "PCGDP", "OFFICE", "IMF", "TARIFF", "date", "ctylabel")
+c10<- c("XCONSTR", "DD", "VERTICAL", "LNPOP", "ECCRISIS", "BPCRISIS", "GATT/WTO", "FIVEOPEN", "USHEG", "PCGDP", "OFFICE", "IMF", "TARIFF", "date", "ctylabel")
+list2<- list(c8, c9, c10)
+```
+
+```{r}
+regs_2<- vector(mode="list", length = length(list2))
+for(j in seq_along(list2)){
+  get_cols<- list2[[j]]
+  mdf_1<- na.omit(reg_data[get_cols])
+  model1<- prais::prais_winsten(TARIFF~.+XCONSTR:DD, data=mdf_1, index=c("date", "ctylabel"))
+  sum_model<-summary(model1)
+  regs_2[[j]]<-sum_model
+}
+```
+
+```{r}
+# Apply to each model
+formatted_models <- lapply(regs_2, format_prais_model)
+
+# Combine into a data frame
+all_rows <- unique(unlist(lapply(formatted_models, names)))
+results_df <- data.frame(row.names = all_rows)
+
+for (i in seq_along(formatted_models)) {
+  model_vec <- formatted_models[[i]]
+  col <- rep("", length(all_rows))
+  names(col) <- all_rows
+  col[names(model_vec)] <- model_vec
+  results_df[[paste0("M", i)]] <- col
+}
+
+# View the formatted table
+print(results_df)
+export_ready<-results_df[c(3:4, 1, 5:8, 10:11, 9, 14:17, 2, 12:13),]
+write.csv(export_ready, "Table 3.csv")
+```
+
+```{r}
+c11<- c("DD", "XCONSTR", "LNPOP", "ECCRISIS", "BPCRISIS", "AV TARIFF", "PCGDP", "OFFICE", "TARIFF", "date", "ctylabel")
+mdf_2<- na.omit(reg_data[,c11])
+model2<- prais::prais_winsten(TARIFF~., data=mdf_2, index=c("date", "ctylabel"))
+summary(model2)
+
+formatted_models <- format_prais_model(summary(model2))
+
+last_model<-as.data.frame(formatted_models)
+write.csv(last_model, "Last Model.csv")
+
+# Combine into a data frame
+all_rows <- unique(unlist(lapply(formatted_models, names)))
+results_df <- data.frame(row.names = all_rows)
+
+for (i in seq_along(formatted_models)) {
+  model_vec <- formatted_models[[i]]
+  col <- rep("", length(all_rows))
+  names(col) <- all_rows
+  col[names(model_vec)] <- model_vec
+  results_df[[paste0("M", i)]] <- col
+}
+```
+
+### Replication Milner & Kubota with VERTICAL
+
+```{r}
+c31<- c("l1polity", "LNPOP", "PCGDP", "TARIFF", "date", "ctylabel")
+c32<- c("l1polity", "LNPOP", "PCGDP", "ECCRISIS", "TARIFF", "date", "ctylabel")
+c33<- c("l1polity", "LNPOP", "PCGDP", "BPCRISIS", "TARIFF", "date", "ctylabel")
+c34<- c("l1polity", "LNPOP", "PCGDP", "IMF", "TARIFF", "date", "ctylabel")
+c35<- c("l1polity", "LNPOP", "PCGDP", "USHEG", "TARIFF", "date", "ctylabel")
+c36<- c("l1polity", "LNPOP", "PCGDP", "FIVEOPEN", "TARIFF", "date", "ctylabel")
+c37<- c("l1polity", "LNPOP", "PCGDP", "TARIFF", "XCONSTR", "date", "ctylabel")
+l31<- list(c31, c32, c33, c34, c35, c36, c37)
+```
+
+```{r}
+formatted_models <- lapply(regs_1, format_prais_model)
+
+# Combine into a data frame
+all_rows <- unique(unlist(lapply(formatted_models, names)))
+results_df <- data.frame(row.names = all_rows)
+
+for (i in seq_along(formatted_models)) {
+  model_vec <- formatted_models[[i]]
+  col <- rep("", length(all_rows))
+  names(col) <- all_rows
+  col[names(model_vec)] <- model_vec
+  results_df[[paste0("M", i)]] <- col
+}
+
+# View the formatted table
+print(results_df)
+export_ready<-results_df[c(3:4, 1, 5:6, 9:14, 2, 7:8),]
+write.csv(export_ready, "Regs1.csv")
+```
