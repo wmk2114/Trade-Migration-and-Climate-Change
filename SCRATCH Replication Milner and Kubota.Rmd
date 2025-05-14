@@ -12,6 +12,9 @@ library(dplyr)
 library(readr)
 library(stringr)
 library(stargazer)
+library(purrr)
+library(tidyr)
+library(kable)
 
 # Load data
 mk_data <- read_dta("LDC_IO_replication.dta")
@@ -141,7 +144,6 @@ lag_within_country <- function(df, var, new_var_name, lag_n = 1) {
   return(df)
 }
 
-colnames(polity_data)
 polity_data<-lag_within_country(df=polity_data, var="polity_no_xconst", new_var_name="l1_polity_no_xconst")
 polity_data<-lag_within_country(df=polity_data, var="xconst", new_var_name="l1_xconst")
 ```
@@ -150,31 +152,164 @@ polity_data<-lag_within_country(df=polity_data, var="xconst", new_var_name="l1_x
 ```{r}
 merged_data <- mk_data %>%
   left_join(polity_data, by = c("merge_country", "merge_year"))
-colnames(merged_data)
-# Diagnostics
-cat("Total MK observations:", nrow(mk_data), "\n")
-cat("Matched with Polity:", sum(!is.na(merged_data$democ)), "\n")
+```
+
+## Summary Statistics
+
+```{r}
+vars_summary_stats <- c(
+  # Main independent variables
+  "xconst",             # Executive constraints (XCONSTR)
+  "aclpn",          # DD: dichotomous democracy/dictatorship
+  "polity_no_xconst",   # Vertical accountability (VERTICAL)
+
+  # Dependent variable
+  "newtar",             # Unweighted average tariff rate
+
+  # Controls
+  "lnpop",              # Natural log of population (LNGDP)
+  "gdp_pc_95d",         # Per capita GDP (PC GDP)
+  
+  "ecris2",             # Economic crisis (EC CRISIS)
+  "bpc1",               # Balance of payments crisis (BP CRISIS)
+  "signed",              # IMF loan participation (IMF)
+
+  "usheg",              # U.S. hegemonic trade influence (US HEG)
+  "gatt_wto_new",       # GATT/WTO membership
+  "avnewtar",           # Average tariff of all developing countries (AV TARIFF)
+
+  "yrsoffic"            # Years in office (OFFICE)
+  # Removed: l1fiveop (no non-lag version found)
+)
 ```
 
 ```{r}
-cor_test<- merged_data[is.na(merged_data$l1aclpn)==F & is.na(merged_data$l1_xconst)==F,]
-cor(cor_test$l1aclpn, cor_test$l1_xconst)
+rename_vars_for_table <- function(df) {
+  names(df)[names(df) == "l1_xconst"] <- "XCONSTR"
+  names(df)[names(df) == "l1aclpn"] <- "DD"
+  names(df)[names(df) == "l1_polity_no_xconst"] <- "VERTICAL"
+  names(df)[names(df) == "newtar"] <- "TARIFF"
+  names(df)[names(df) == "l1lnpop"] <- "LNPOP"
+  names(df)[names(df) == "l1gdp_pc"] <- "PCGDP"
+  names(df)[names(df) == "l1ecris2"] <- "ECCRISIS"
+  names(df)[names(df) == "l1bpc1"] <- "BPCRISIS"
+  names(df)[names(df) == "l1signed"] <- "IMF"
+  names(df)[names(df) == "l1usheg"] <- "USHEG"
+  names(df)[names(df) == "l1gatt_wto_new"] <- "GATT/WTO"
+  names(df)[names(df) == "l1avnewtar"] <- "AV TARIFF"
+  names(df)[names(df) == "l1office"] <- "OFFICE"
+   names(df)[names(df) == "l1fiveop"] <- "FIVEOPEN"
+  return(df)
+}
+```
+
+```{r}
+sum_stats_tab<-merged_data[vars_summary_stats]
+summary_df<-rename_vars_for_table(sum_stats_tab)
+```
+
+```{r}
+summary_table <- summary_df %>%
+  summarise(across(everything(), list(
+    n = ~sum(!is.na(.)),
+    mean = ~mean(., na.rm = TRUE),
+    sd = ~sd(., na.rm = TRUE),
+    min = ~min(., na.rm = TRUE),
+    max = ~max(., na.rm = TRUE)
+  ))) %>%
+  pivot_longer(cols = everything(),
+               names_to = c("variable", ".value"),
+               names_sep = "_") %>%
+  mutate(across(where(is.numeric), ~round(., 2))) %>%
+  arrange(variable)
+
+```
+
+```{r}
+colnames(summary_table)<- c("Variable", "Observations", "Mean", "Standard Deviation", "Minimum", "Maximum")
+```
+
+```{r}
+summary_table<-summary_table[c(c(10, 13, 12), 1:9, 11),]
+```
+
+### Models
+
+```{r}
+reg_data<-rename_vars_for_table(merged_data)
+```
+
+### Model 1
+
+```{r}
+c1<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "TARIFF", "date", "ctylabel")
+c2<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "ECCRISIS", "TARIFF", "date", "ctylabel")
+c3<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "BPCRISIS", "TARIFF", "date", "ctylabel")
+c4<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "IMF", "TARIFF", "date", "ctylabel")
+c5<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "USHEG", "TARIFF", "date", "ctylabel")
+c6<- c("XCONSTR", "DD", "LNPOP", "PCGDP", "FIVEOPEN", "TARIFF", "date", "ctylabel")
+l1<- list(c1, c2, c3, c4, c5, c6)
+```
+
+```{r}
+regs_1<- vector(mode="list", length = length(l1))
+for(j in seq_along(l1)){
+  get_cols<- l1[[j]]
+  mdf_1<- na.omit(reg_data[get_cols])
+  model1<- prais::prais_winsten(TARIFF~.+XCONSTR:DD, data=mdf_1, index=c("date", "ctylabel"))
+  sum_model<-summary(model1)
+  regs_1[[j]]<-sum_model
+}
+```
+
+```{r}
+
+coefs<- round(regs_1[[1]]$coefficients, 3)
+
+
+
+regs_1[[1]]$coefficients[1,]
+
+regs_1[[1]]$r.squared
+estimate<- round(regs_1[[1]]$coefficients[j, 1], 3)
+error<- 
+
 ```
 
 
 ```{r}
-merged_data$aclpn2<- as.factor(merged_data$aclpn)
+regs_1[[1]]
+stargazer::stargazer(regs_1[[1]]$coefficients)
 ```
 
+
 ```{r}
-mc_1<- c("l1_xconst", "l1aclpn", "l1_polity_no_xconst", "l1lnpop", "l1gdp_pc", "newtar", "date", "ctylabel")
+c("XCONSTR", "DD", "VERTICAL", "LNPOP", "PCGDP", "TARIFF", "date", "ctylabel")
+```
 
-mdf_1<- na.omit(merged_data[mc_1])
-mdf_1$l1aclpn<- as.factor(mdf_1$l1aclpn)
 
-mm1_1<- prais::prais_winsten(newtar~l1_xconst*l1aclpn+l1_polity_no_xconst+l1lnpop+l1gdp_pc+date+as.factor(ctylabel), data=mdf_1, index=c("date", "ctylabel"))
+
+```{r}
+mc_1<- c("XCONSTR", "DD", "VERTICAL", "LNPOP", "PCGDP", "TARIFF", "date", "ctylabel")
+
+mdf_1<- na.omit(reg_data[mc_1])
+
+mm1_1<- prais::prais_winsten(TARIFF~XCONSTR*DD+LNPOP+PCGDP+date+as.factor(ctylabel), data=mdf_1, index=c("date", "ctylabel"))
 sum_mm1<-summary(mm1_1)
 ```
+
+### Model 2
+
+```{r}
+mc_2<- c("XCONSTR", "VERTICAL", "LNPOP", "PCGDP", "TARIFF", "date", "ctylabel")
+
+mdf_2<- na.omit(reg_data[mc_2])
+
+m2<- prais::prais_winsten(TARIFF~XCONSTR*VERTICAL+LNPOP+PCGDP+date+as.factor(ctylabel), data=mdf_2, index=c("date", "ctylabel"))
+sum_m2<-summary(m2)
+```
+
+
 
 ```{r}
 mc_2<- c("l1_xconst", "l1aclpn", "l1lnpop", "l1gdp_pc", "l1ecris2", "l1bpc1", "l1signed", "l1office", "l1avnewtar", "l1gatt_wto_new", "l1fdi", "newtar", "date", "ctylabel")
